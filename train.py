@@ -7,11 +7,13 @@ from tqdm import tqdm
 
 import torch
 import torch.optim as optim
-from torch import nn
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-import torchvision.models as models
+# import torchvision.models as models
 import torchvision.transforms as transforms
+
+import model.model as models
 
 # Training settings
 parser = argparse.ArgumentParser(description='Training')
@@ -41,9 +43,9 @@ max_acc = 0
 resume = False
 
 print('Init Model ...')
-model = models.resnet18(pretrained=True)
 
-model.fc = nn.Linear(model.fc.in_features, 2)
+model = models.encoder18(pretrained=True)
+
 # if args.resume:
 #     resume = True
 #     model.load_state_dict(torch.load(args.resume)['state_dict'])
@@ -113,7 +115,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
 
         # 找出 top-k
         probs = probs.cpu().numpy()
-        groups = np.array(trainset.imageIDX)
+        groups = np.array(trainset.patchIDX)
         order = np.lexsort((probs, groups))
         dataset_length = trainset.__len__()
 
@@ -177,7 +179,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
                         = val_output.detach()[:, 1].clone()
 
             val_probs = val_probs.cpu().numpy()
-            val_groups = np.array(valset.imageIDX)
+            val_groups = np.array(valset.patchIDX)
 
             max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
             max_prob[:] = np.nan

@@ -90,8 +90,9 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = None  # 这里去除了 resnet 原版代码的分类部分
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(self.in_features, 2)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -133,15 +134,15 @@ class ResNet(nn.Module):
         x = self.avgpool(x4)
         x = torch.flatten(x,1)
         x = self.fc(x)
-        return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
-
+        # return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
+        return x
 
 def resnet18(pretrained=False, **kwargs):
     """Constructs a ResNet-18 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    model = ResNet(BasicBlock, [2, 2, 2, 2], fc, **kwargs)
+    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
     return model

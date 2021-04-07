@@ -78,7 +78,7 @@ def test(testset, batch_size, workers, model, topk, output_path):
             probs[i * batch_size:i * batch_size + input.size(0)] = output.detach()[:, 1].clone()
 
     probs = probs.cpu().numpy()
-    groups = np.array(testset.imageIDX)
+    groups = np.array(testset.patchIDX)
     patches = np.array(testset.patches)
 
     order = np.lexsort((probs, groups))

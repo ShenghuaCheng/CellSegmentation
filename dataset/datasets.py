@@ -38,12 +38,12 @@ class LystoDataset(Dataset):
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
-        self.imageIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
+        self.patchIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
         self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.size = size
 
-        imageIDX = -1
+        patchIDX = -1
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
 
             # 调试用代码
@@ -53,14 +53,14 @@ class LystoDataset(Dataset):
             if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
                 continue
 
-            imageIDX += 1
+            patchIDX += 1
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
             # self.labels.append(1 if label != 0 else 0)
             p = get_patches(img, self.interval, self.size)
             self.patches.extend(p) # 获取 32 * 32 的实例
-            self.imageIDX.extend([imageIDX] * len(p))
+            self.patchIDX.extend([patchIDX] * len(p))
 
         self.mode = None
         self.transform = transform
@@ -71,8 +71,8 @@ class LystoDataset(Dataset):
     def make_train_data(self, idxs, shuffle=True):
         # 用于 mode 2，制作训练用数据集
         # 当 patch 对应的切片的 label 为 n 时标签为 1 ，否则为 0
-        self.train_data = [(self.imageIDX[i], self.patches[i],
-                            0 if self.labels[self.imageIDX[i]] == 0 else 1) for i in idxs]
+        self.train_data = [(self.patchIDX[i], self.patches[i],
+                            0 if self.labels[self.patchIDX[i]] == 0 else 1) for i in idxs]
         if shuffle:
             self.train_data = random.sample(self.train_data, len(self.train_data))
 
@@ -82,31 +82,37 @@ class LystoDataset(Dataset):
 
         if self.mode == 1: # top-k 选取模式
             (x, y) = self.patches[idx]
-            patch = self.images[self.imageIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
+            patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
             if self.transform is not None:
                 patch = self.transform(patch)
 
-            label = self.labels[self.imageIDX[idx]]
-
+            label = self.labels[self.patchIDX[idx]]
+            return patch, label
+        
         elif self.mode == 2: # 训练数据模式
-            imageIDX, patch_grid, label = self.train_data[idx]
+            patchIDX, patch_grid, label = self.train_data[idx]
             (x, y) = patch_grid
-            patch = self.images[imageIDX][x:x + self.size - 1, y:y + self.size - 1]
+            patch = self.images[patchIDX][x:x + self.size - 1, y:y + self.size - 1]
             ## for visualized testing
             # if idx < 50:
             #     from PIL import Image
-            #     Image.fromarray(patch).save('test/img{}_patch{}_label{}.png'.format(imageIDX, idx, label))
+            #     Image.fromarray(patch).save('test/img{}_patch{}_label{}.png'.format(patchIDX, idx, label))
             if self.transform is not None:
                 patch = self.transform(patch)
+            return patch, label
 
+        elif self.mode == 3:
+            image = self.images[idx]
+            label = self.labels[idx]
+            return image, label
+        
         else:
             raise Exception("Something wrong in setmode.")
-
-        return patch, label
+        
 
     def __len__(self):
         if self.mode == 1:
-            return len(self.imageIDX)
+            return len(self.patchIDX)
         elif self.mode == 2:
             return len(self.train_data)
         else:
@@ -135,24 +141,24 @@ class LystoTestset(Dataset):
 
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
-        self.imageIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
+        self.patchIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
         self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.size = size
 
-        imageIDX = -1
+        patchIDX = -1
         for i, (organ, img) in enumerate(zip(f['organ'], f['x'])):
 
             # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
             if num_of_imgs != 0 and i == num_of_imgs:
                 break
 
-            imageIDX += 1
+            patchIDX += 1
             self.organs.append(organ)
             self.images.append(img)
             p = get_patches(img, self.interval, self.size)
             self.patches.extend(p) # 获取 32 * 32 的实例
-            self.imageIDX.extend([imageIDX] * len(p))
+            self.patchIDX.extend([patchIDX] * len(p))
 
         self.transform = transform
 
@@ -161,14 +167,14 @@ class LystoTestset(Dataset):
         # organ = self.organs[idx]
 
         (x, y) = self.patches[idx]
-        patch = self.images[self.imageIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
+        patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
         if self.transform is not None:
             patch = self.transform(patch)
 
         return patch
 
     def __len__(self):
-        return len(self.imageIDX)
+        return len(self.patchIDX)
 
 
 def get_patches(image, interval=10, size=32):
