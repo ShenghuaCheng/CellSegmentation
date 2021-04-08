@@ -24,8 +24,10 @@ parser.add_argument('--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int, help='test on val every (default: 1)')
-parser.add_argument('--topk', default=10, type=int,
-                    help='top k tiles are assumed to be of the same class as the slide (default: 10, standard MIL)')
+parser.add_argument('--topk_pos', default=5, type=int,
+                    help='top k tiles are from a single positive cell (default: 5, standard MIL)')
+parser.add_argument('--topk_neg', default=30, type=int,
+                    help='top k tiles are from negative cells of an image (default: 30, standard MIL)')
 parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
 parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
@@ -61,11 +63,12 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 model.to(device)
 
 
-def train(trainset, valset, batch_size, workers, total_epochs, test_every, model, criterion, optimizer, topk_pos,
+def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every, model, criterion, optimizer, topk_pos,
           topk_neg, output_path):
     """
     :param trainset:        训练数据集
     :param valset:          验证数据集
+    :param mode:            训练模式，["patch", "image"]，仅对 trainset 生效
     :param batch_size:      Dataloader 打包的小 batch 大小
     :param workers:         Dataloader 使用的进程数
     :param total_epochs:    迭代次数
@@ -79,6 +82,8 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
     """
 
     global max_acc, resume
+
+    assert mode in ("patch", "image")
 
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
     val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
@@ -95,47 +100,57 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
 
     for epoch in range(1, total_epochs + 1):
 
-        trainset.setmode(1)
+        if mode == "patch": # patch mode = classification
+            trainset.setmode(1)
 
-        # 获取实例分类概率
-        model.eval()
-        probs = torch.FloatTensor(len(train_loader.dataset))
-        with torch.no_grad():
-            # 禁止反向传播
-            patch_bar = tqdm(train_loader, total=len(train_loader))
-            for i, input in enumerate(patch_bar):
-                patch_bar.set_postfix(step="patch forwarding",
-                                      epoch="[{}/{}]".format(epoch, total_epochs),
-                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
-                # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
-                output = F.softmax(model(input[0].to(device)), dim=1)
-                # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
-                # input.size(0) 返回 batch 中的实例数量
-                probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
+            # 获取实例分类概率
+            model.eval()
 
-        # 找出 top-k
-        probs = probs.cpu().numpy()
-        groups = np.array(trainset.patchIDX)
-        order = np.lexsort((probs, groups))
-        dataset_length = trainset.__len__()
+            probs = torch.FloatTensor(len(train_loader.dataset))
+            with torch.no_grad():
+                # 禁止反向传播
+                patch_bar = tqdm(train_loader, total=len(train_loader))
+                for i, input in enumerate(patch_bar):
+                    patch_bar.set_postfix(step="patch forwarding",
+                                          epoch="[{}/{}]".format(epoch, total_epochs),
+                                          batch="[{}/{}]".format(i + 1, len(train_loader)))
+                    # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
+                    x = F.softmax(model(input[0].to(device)), dim=1) # x 是第四个块输出的特征，[64, 512, 1, 1]
+                    x = model.avgpool(x)
+                    x = torch.flatten(x,1)
+                    output = model.fc(x)
+                    # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
+                    # input.size(0) 返回 batch 中的实例数量
+                    probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
 
-        index = np.empty(dataset_length, 'bool')
-        for i in range(dataset_length):
-            # topk 是实际的 patch 选取数目，如果是阴性样本就直接选取设定的值，如果是阳性样本就使用坐标数目 × 设定的值
-            topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * topk_pos
-            index[i] = groups[i] != groups[(i + topk) % len(groups)]
+            # 找出 top-k
+            probs = probs.cpu().numpy()
+            groups = np.array(trainset.patchIDX)
+            order = np.lexsort((probs, groups))
+            dataset_length = trainset.__len__()
 
-        # 根据分类，制作迭代使用的数据集
-        trainset.make_train_data(list(order[index]))
+            index = np.empty(dataset_length, 'bool')
+            for i in range(dataset_length):
+                # topk 是实际的 patch 选取数目，如果是阴性样本就直接选取设定的值，如果是阳性样本就使用坐标数目 × 设定的值
+                topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * topk_pos
+                index[i] = groups[i] != groups[(i + topk) % len(groups)]
 
-        trainset.setmode(2)
+            # 根据分类，制作迭代使用的数据集
+            trainset.make_train_data(list(order[index]))
+
+            trainset.setmode(2)
+
+        elif mode == "image": # image mode = classification + regression + clustering
+            trainset.setmode(3)
+            model.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # global avg_pooling
+            model.fc = nn.Linear(model.fc.in_features, 2)
 
         # training
         model.train()
         train_loss = 0.
         train_bar = tqdm(train_loader, total=len(train_loader))
         for i, (data, label) in enumerate(train_bar):
-            train_bar.set_postfix(step="training",
+            train_bar.set_postfix(step="{} training".format(mode),
                                   epoch="[{}/{}]".format(epoch, total_epochs),
                                   batch="[{}/{}]".format(i + 1, len(train_loader)))
 
@@ -236,6 +251,15 @@ if __name__ == "__main__":
     imageSet_val = LystoDataset(filepath="data/training.h5", transform=trans, train=False,
                                 interval=args.interval, size=args.patch_size, num_of_imgs=51)
 
-    train(imageSet, imageSet_val, batch_size=args.batch_size, workers=args.workers, total_epochs=args.epochs,
-          test_every=args.test_every, model=model, criterion=criterion, optimizer=optimizer, topk=args.topk,
+    train(imageSet, imageSet_val,
+          mode="patch",
+          batch_size=args.batch_size,
+          workers=args.workers,
+          total_epochs=args.epochs,
+          test_every=args.test_every,
+          model=model,
+          criterion=criterion,
+          optimizer=optimizer,
+          topk_pos=args.topk_pos,
+          topk_neg=args.topk_neg,
           output_path=args.output)

@@ -101,7 +101,7 @@ class LystoDataset(Dataset):
                 patch = self.transform(patch)
             return patch, label
 
-        elif self.mode == 3:
+        elif self.mode == 3: # 图像训练模式
             image = self.images[idx]
             label = self.labels[idx]
             return image, label
@@ -115,6 +115,8 @@ class LystoDataset(Dataset):
             return len(self.patchIDX)
         elif self.mode == 2:
             return len(self.train_data)
+        elif self.mode == 3:
+            return len(self.labels)
         else:
             raise Exception("Something wrong in setmode.")
 
