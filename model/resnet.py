@@ -134,8 +134,8 @@ class ResNet(nn.Module):
         x = self.avgpool(x4)
         x = torch.flatten(x,1)
         x = self.fc(x)
-        # return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
-        return x
+
+        return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
 
 def resnet18(pretrained=False, **kwargs):
     """Constructs a ResNet-18 model.
