@@ -1,5 +1,8 @@
 /training_results/
 /output/
 /data/
+/.idea/CellSegmentation.iml
+/.idea/misc.xml
+/.idea/modules.xml
 *.ipynb
 .ipynb_checkpoints
