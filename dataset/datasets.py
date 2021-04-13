@@ -80,7 +80,8 @@ class LystoDataset(Dataset):
 
         # organ = self.organs[idx]
 
-        if self.mode == 1: # top-k 选取模式
+        # top-k 选取模式 (patch mode)
+        if self.mode == 1:
             (x, y) = self.patches[idx]
             patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
             if self.transform is not None:
@@ -88,8 +89,9 @@ class LystoDataset(Dataset):
 
             label = self.labels[self.patchIDX[idx]]
             return patch, label
-        
-        elif self.mode == 2: # 训练数据模式
+
+        # 训练数据模式 (patch mode)
+        elif self.mode == 2:
             patchIDX, patch_grid, label = self.train_data[idx]
             (x, y) = patch_grid
             patch = self.images[patchIDX][x:x + self.size - 1, y:y + self.size - 1]
@@ -101,7 +103,8 @@ class LystoDataset(Dataset):
                 patch = self.transform(patch)
             return patch, label
 
-        elif self.mode == 3: # 图像训练模式
+        # image mode
+        elif self.mode == 3:
             image = self.images[idx]
             label = self.labels[idx]
             return image, label

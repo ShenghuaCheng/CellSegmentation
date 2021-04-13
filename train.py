@@ -104,6 +104,7 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
             trainset.setmode(1)
 
             # 获取实例分类概率
+            model.fc = nn.Linear(model.fc.in_features, 2)
             model.eval()
 
             probs = torch.FloatTensor(len(train_loader.dataset))
@@ -115,10 +116,10 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                                           epoch="[{}/{}]".format(epoch, total_epochs),
                                           batch="[{}/{}]".format(i + 1, len(train_loader)))
                     # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
-                    x = F.softmax(model(input[0].to(device)), dim=1) # x 是第四个块输出的特征，[64, 512, 1, 1]
+                    x = model(input[0].to(device)) # x 是第四个块输出的特征，[64, 512, 1, 1]
                     x = model.avgpool(x)
                     x = torch.flatten(x,1)
-                    output = model.fc(x)
+                    output = F.softmax(model.fc(x), dim=1)
                     # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
                     # input.size(0) 返回 batch 中的实例数量
                     probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
@@ -142,8 +143,8 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
         elif mode == "image": # image mode = classification + regression + clustering
             trainset.setmode(3)
-            model.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # global avg_pooling
-            model.fc = nn.Linear(model.fc.in_features, 2)
+            model.avgpool = None
+            model.fc = None
 
         # training
         model.train()
@@ -155,6 +156,9 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                                   batch="[{}/{}]".format(i + 1, len(train_loader)))
 
             output = model(data.to(device))
+            output = model.avgpool(output)
+            output = torch.flatten(output, 1)
+            output = model.fc(output)
             # reset gradients
             optimizer.zero_grad()
             # calculate loss
@@ -189,7 +193,9 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                     bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
                                     batch="[{}/{}]".format(i + 1, len(val_loader)))
                     # 把训练过的 model 在验证集上做一下
-                    val_output = F.softmax(model(input[0].to(device)), dim=1)
+                    val_output = model(input[0].to(device))
+                    val_output = torch.flatten(model.avgpool(val_output),1)
+                    val_output = F.softmax(model.fc(val_output), dim=1)
                     val_probs[i * batch_size:i * batch_size + input[0].size(0)] \
                         = val_output.detach()[:, 1].clone()
 
@@ -247,9 +253,9 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="data/training.h5", transform=trans,
-                            interval=args.interval, size=args.patch_size, num_of_imgs=51)
+                            interval=args.interval, size=64, num_of_imgs=51)
     imageSet_val = LystoDataset(filepath="data/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=args.patch_size, num_of_imgs=51)
+                                interval=args.interval, size=64, num_of_imgs=51)
 
     train(imageSet, imageSet_val,
           mode="patch",

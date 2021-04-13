@@ -82,6 +82,7 @@ class ResNet(nn.Module):
     def __init__(self, block, layers, num_classes=1000):
         self.inplanes = 64
         super(ResNet, self).__init__()
+        # encoder
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
@@ -136,8 +137,8 @@ class ResNet(nn.Module):
         x = self.avgpool(x4)
         x = torch.flatten(x,1)
         x = self.fc(x)
-        # return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
-        return x
+
+        return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
 
 def resnet18(pretrained=False, **kwargs):
     """Constructs a ResNet-18 model.

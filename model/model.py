@@ -27,10 +27,6 @@ class Encoder(ResNet):
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
         # 共享编码器仅包含所有的卷积层，不包含全局池化和全连接层
-        # x = self.avgpool(x4)
-        # x = torch.flatten(x,1)
-        # x = self.fc(x)
-        # return x
         return x4
 
 def encoder18(pretrained=False, **kwargs):
