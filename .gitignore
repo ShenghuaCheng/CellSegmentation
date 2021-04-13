@@ -1,6 +1,6 @@
 /training_results/
 /output/
 /data/
-*.csv
+/.idea/*.iml
 *.ipynb
 .ipynb_checkpoints
