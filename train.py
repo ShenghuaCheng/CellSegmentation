@@ -13,7 +13,7 @@ import torch.nn.functional as F
 # import torchvision.models as models
 import torchvision.transforms as transforms
 
-import model.model as models
+import model.resnet as models
 
 # Training settings
 parser = argparse.ArgumentParser(description='Training')
@@ -46,7 +46,7 @@ resume = False
 
 print('Init Model ...')
 
-model = models.encoder18(pretrained=True)
+model = models.resnet18(pretrained=True)
 
 # if args.resume:
 #     resume = True
@@ -109,7 +109,6 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
             probs = torch.FloatTensor(len(train_loader.dataset))
             with torch.no_grad():
-                # 禁止反向传播
                 patch_bar = tqdm(train_loader, total=len(train_loader))
                 for i, input in enumerate(patch_bar):
                     patch_bar.set_postfix(step="patch forwarding",
@@ -143,10 +142,26 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
         elif mode == "image": # image mode = classification + regression + clustering
             trainset.setmode(3)
-            model.avgpool = None
-            model.fc = None
+            model.eval()
+
+            with torch.no_grad():
+                patch_bar = tqdm(train_loader, total=len(train_loader))
+                for i, input in enumerate(patch_bar):
+                    patch_bar.set_postfix(step="slide image forwarding",
+                                          epoch="[{}/{}]".format(epoch, total_epochs),
+                                          batch="[{}/{}]".format(i + 1, len(train_loader)))
+                    _, out = model(input[0].to(device))  # out 包括了四个块输出的特征, x4 = [64, 512, 9, 9]
+                    out_x4 = model.pyramid_9(out['x4'])  # out_x4: [64, 32, 9, 9]
+                    out_x3 = model.pyramid_18(out['x3'])  # out_x3: [64, 32, 18, 18]
+                    out_x2 = model.pyramid_36(out['x2'])  # out_x2: [64, 32, 36, 36]
+                    out_y = F.interpolate(out_x4.clone(), scale_factor=2) + out_x3  # out_y: [64, 32, 18, 18]
+                    out_y = F.interpolate(out_y.clone(), scale_factor=2) + out_x2  # out_y: [64, 32, 36, 36]
+
+            # TODO: clustering
+
 
         # training
+
         model.train()
         train_loss = 0.
         train_bar = tqdm(train_loader, total=len(train_loader))
@@ -159,18 +174,13 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
             output = model.avgpool(output)
             output = torch.flatten(output, 1)
             output = model.fc(output)
-            # reset gradients
+
             optimizer.zero_grad()
-            # calculate loss
             loss = criterion(output, label.to(device))
             train_loss += loss.item() * data.size(0)
-
-            # backward pass
             loss.backward()
-            # step
             optimizer.step()
 
-        # calculate loss and error for epoch
         train_loss /= len(train_loader.dataset)
         print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
         fconv = open(os.path.join(output_path, 'convergence.csv'), 'a')

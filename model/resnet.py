@@ -95,6 +95,28 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(self.in_features, 2)
 
+        self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
+
+        # 金字塔层级
+        self.pyramid_9 = nn.Sequential(
+            nn.Conv2d(512, 128, kernel_size=1, stride=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+        )
+        self.pyramid_18 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=1, stride=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+        )
+        self.pyramid_36 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=1, stride=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+        )
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight)
@@ -131,10 +153,6 @@ class ResNet(nn.Module):
         x2 = self.layer2(x1)
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
-
-        x = self.avgpool(x4)
-        x = torch.flatten(x,1)
-        x = self.fc(x)
 
         return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
 
