@@ -10,7 +10,6 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-# import torchvision.models as models
 import torchvision.transforms as transforms
 
 import model.resnet as models
@@ -52,8 +51,9 @@ model = models.resnet18(pretrained=True)
 #     resume = True
 #     model.load_state_dict(torch.load(args.resume)['state_dict'])
 
-normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-trans = transforms.Compose([transforms.ToTensor(), normalize])
+# normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+# trans = transforms.Compose([transforms.ToTensor(), normalize])
+trans = transforms.ToTensor()
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -115,8 +115,8 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                                           epoch="[{}/{}]".format(epoch, total_epochs),
                                           batch="[{}/{}]".format(i + 1, len(train_loader)))
                     # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
-                    x = model(input[0].to(device)) # x 是第四个块输出的特征，[64, 512, 1, 1]
-                    x = model.avgpool(x)
+                    out = model(input[0].to(device)) # out_x4 是第四个块输出的特征，[64, 512, 1, 1]
+                    x = model.avgpool(out['x4'])
                     x = torch.flatten(x,1)
                     output = F.softmax(model.fc(x), dim=1)
                     # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
@@ -150,10 +150,10 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                     patch_bar.set_postfix(step="slide image forwarding",
                                           epoch="[{}/{}]".format(epoch, total_epochs),
                                           batch="[{}/{}]".format(i + 1, len(train_loader)))
-                    _, out = model(input[0].to(device))  # out 包括了四个块输出的特征, x4 = [64, 512, 9, 9]
-                    out_x4 = model.pyramid_9(out['x4'])  # out_x4: [64, 32, 9, 9]
-                    out_x3 = model.pyramid_18(out['x3'])  # out_x3: [64, 32, 18, 18]
-                    out_x2 = model.pyramid_36(out['x2'])  # out_x2: [64, 32, 36, 36]
+                    out = model(input[0].to(device))  # out 包括了四个块输出的特征, x4 = [46, 512, 10, 10]
+                    out_x4 = model.pyramid_9(out['x4'])  # out_x4: [46, 32, 9, 9]
+                    out_x3 = model.pyramid_18(out['x3'])  # out_x3: [46, 32, 18, 18]
+                    out_x2 = model.pyramid_36(out['x2'])  # out_x2: [46, 32, 36, 36]
                     out_y = F.interpolate(out_x4.clone(), scale_factor=2) + out_x3  # out_y: [64, 32, 18, 18]
                     out_y = F.interpolate(out_y.clone(), scale_factor=2) + out_x2  # out_y: [64, 32, 36, 36]
 

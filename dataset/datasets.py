@@ -107,6 +107,8 @@ class LystoDataset(Dataset):
         elif self.mode == 3:
             image = self.images[idx]
             label = self.labels[idx]
+            if self.transform is not None:
+                image = self.transform(image)
             return image, label
         
         else:

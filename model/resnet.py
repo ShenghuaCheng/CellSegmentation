@@ -154,7 +154,7 @@ class ResNet(nn.Module):
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
 
-        return x, {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
+        return {'x1':x1, 'x2': x2, 'x3':x3, 'x4': x4}
 
 def resnet18(pretrained=False, **kwargs):
     """Constructs a ResNet-18 model.
