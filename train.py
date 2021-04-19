@@ -104,7 +104,7 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
             trainset.setmode(1)
 
             # 获取实例分类概率
-            model.fc = nn.Linear(model.fc.in_features, 2)
+            model.fc = nn.Linear(model.fc.in_features, 2)  # 把 ResNet 源码中的分为 1000 类改为二分类
             model.eval()
 
             probs = torch.FloatTensor(len(train_loader.dataset))
@@ -268,7 +268,7 @@ if __name__ == "__main__":
                                 interval=args.interval, size=64, num_of_imgs=51)
 
     train(imageSet, imageSet_val,
-          mode="patch",
+          mode="image",
           batch_size=args.batch_size,
           workers=args.workers,
           total_epochs=args.epochs,
