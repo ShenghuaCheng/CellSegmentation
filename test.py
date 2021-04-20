@@ -10,8 +10,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-import torchvision.models as models
 import torchvision.transforms as transforms
+
+import model.resnet as models
 
 parser = argparse.ArgumentParser(description='Testing & Heatmap')
 parser.add_argument('--model', type=str, default='checkpoint_best.pth', help='path to pretrained model')
@@ -32,12 +33,13 @@ else:
     torch.manual_seed(1)
 
 print('Init Model ...')
-model = models.resnet18(pretrained=True)
-model.fc = nn.Linear(model.fc.in_features, 2)
+model = models.MILresnet18(pretrained=True)
+model.fc_patch = nn.Linear(model.fc_patch.in_features, 2)
 model.load_state_dict(torch.load(args.model)['state_dict'])
 
-normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-trans = transforms.Compose([transforms.ToTensor(), normalize])
+# normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+# trans = transforms.Compose([transforms.ToTensor(), normalize])
+trans = transforms.ToTensor()
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 os.environ['CUDA_VISIBLE_DEVICES'] = args.device
@@ -114,7 +116,7 @@ def test(testset, batch_size, workers, model, topk, output_path):
 
 
 if __name__ == "__main__":
-    from datasets import LystoTestset
+    from dataset.datasets import LystoTestset
 
     print('Loading test set ...')
     imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans,

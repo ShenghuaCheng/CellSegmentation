@@ -45,7 +45,7 @@ resume = False
 
 print('Init Model ...')
 
-model = models.resnet18(pretrained=True)
+model = models.MILresnet18(pretrained=True)
 
 # if args.resume:
 #     resume = True
@@ -55,7 +55,8 @@ model = models.resnet18(pretrained=True)
 # trans = transforms.Compose([transforms.ToTensor(), normalize])
 trans = transforms.ToTensor()
 
-criterion = nn.CrossEntropyLoss()
+criterion_cls = nn.CrossEntropyLoss()
+criterion_reg = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -63,8 +64,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 model.to(device)
 
 
-def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every, model, criterion, optimizer, topk_pos,
-          topk_neg, output_path):
+def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every, model,
+          criterion_cls, criterion_reg, optimizer, topk_pos, topk_neg, output_path):
     """
     :param trainset:        训练数据集
     :param valset:          验证数据集
@@ -74,7 +75,8 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
     :param total_epochs:    迭代次数
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
-    :param criterion:       损失函数
+    :param criterion_cls:   分类器损失函数
+    :param criterion_reg:   回归损失函数
     :param optimizer:       优化器
     :param topk_pos:        每次在**单个阳性细胞**上选取的 top-k patch 数
     :param topk_neg:        每次在阴性细胞图像上选取的 top-k patch 数
@@ -100,11 +102,14 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
     for epoch in range(1, total_epochs + 1):
 
-        if mode == "patch": # patch mode = classification
+        # patch mode
+        if mode == "patch":
             trainset.setmode(1)
+            model.setmode("patch")
 
             # 获取实例分类概率
-            model.fc = nn.Linear(model.fc.in_features, 2)  # 把 ResNet 源码中的分为 1000 类改为二分类
+            # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
+            model.fc_patch = nn.Linear(model.fc_patch.in_features, 2)
             model.eval()
 
             probs = torch.FloatTensor(len(train_loader.dataset))
@@ -115,10 +120,8 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                                           epoch="[{}/{}]".format(epoch, total_epochs),
                                           batch="[{}/{}]".format(i + 1, len(train_loader)))
                     # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
-                    out = model(input[0].to(device)) # out_x4 是第四个块输出的特征，[64, 512, 1, 1]
-                    x = model.avgpool(out['x4'])
-                    x = torch.flatten(x,1)
-                    output = F.softmax(model.fc(x), dim=1)
+                    output = model(input[0].to(device))
+                    output = F.softmax(output, dim=1)
                     # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
                     # input.size(0) 返回 batch 中的实例数量
                     probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
@@ -138,114 +141,118 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
             # 根据分类，制作迭代使用的数据集
             trainset.make_train_data(list(order[index]))
 
+            # patch training
             trainset.setmode(2)
+            model.train()
 
-        elif mode == "image": # image mode = classification + regression + clustering
+            train_loss = 0.
+            train_bar = tqdm(train_loader, total=len(train_loader))
+            for i, (data, label) in enumerate(train_bar):
+                train_bar.set_postfix(step="{} training".format(mode),
+                                      epoch="[{}/{}]".format(epoch, total_epochs),
+                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
+
+                output = model(data.to(device))
+
+                optimizer.zero_grad()
+                loss = criterion_cls(output, label.to(device))
+                train_loss += loss.item() * data.size(0)
+                loss.backward()
+                optimizer.step()
+
+            train_loss /= len(train_loader.dataset)
+            print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
+            fconv = open(os.path.join(output_path, 'patch_training.csv'), 'a')
+            fconv.write('{},loss,{}\n'.format(epoch, train_loss))
+            fconv.close()
+
+
+        # image mode = image_cls + image_reg + image_seg
+        elif mode == "image":
             trainset.setmode(3)
-            model.eval()
+            model.setmode("image")
+            model.train()
+            train_loss = 0.
+            train_bar = tqdm(train_loader, total=len(train_loader))
+            for i, (data, label) in enumerate(train_bar):
+                train_bar.set_postfix(step="{} training".format(mode),
+                                      epoch="[{}/{}]".format(epoch, total_epochs),
+                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
 
-            with torch.no_grad():
-                patch_bar = tqdm(train_loader, total=len(train_loader))
-                for i, input in enumerate(patch_bar):
-                    patch_bar.set_postfix(step="slide image forwarding",
-                                          epoch="[{}/{}]".format(epoch, total_epochs),
-                                          batch="[{}/{}]".format(i + 1, len(train_loader)))
-                    out = model(input[0].to(device))  # out 包括了四个块输出的特征, x4 = [46, 512, 10, 10]
-                    out_x4 = model.pyramid_9(out['x4'])  # out_x4: [46, 32, 9, 9]
-                    out_x3 = model.pyramid_18(out['x3'])  # out_x3: [46, 32, 18, 18]
-                    out_x2 = model.pyramid_36(out['x2'])  # out_x2: [46, 32, 36, 36]
-                    out_y = F.interpolate(out_x4.clone(), scale_factor=2) + out_x3  # out_y: [64, 32, 18, 18]
-                    out_y = F.interpolate(out_y.clone(), scale_factor=2) + out_x2  # out_y: [64, 32, 36, 36]
+                output = model(data.to(device))
+                optimizer.zero_grad()
 
-            # TODO: clustering
+                loss_cls = criterion_cls(output, label.to(device))  # 图片分类损失
+                loss_reg = criterion_reg(output, label.to(device))  # 回归数目损失
+                loss = loss_cls + loss_reg
 
+                train_loss += loss.item() * data.size(0)
+                loss.backward()
+                optimizer.step()
 
-        # training
-
-        model.train()
-        train_loss = 0.
-        train_bar = tqdm(train_loader, total=len(train_loader))
-        for i, (data, label) in enumerate(train_bar):
-            train_bar.set_postfix(step="{} training".format(mode),
-                                  epoch="[{}/{}]".format(epoch, total_epochs),
-                                  batch="[{}/{}]".format(i + 1, len(train_loader)))
-
-            output = model(data.to(device))
-            output = model.avgpool(output)
-            output = torch.flatten(output, 1)
-            output = model.fc(output)
-
-            optimizer.zero_grad()
-            loss = criterion(output, label.to(device))
-            train_loss += loss.item() * data.size(0)
-            loss.backward()
-            optimizer.step()
-
-        train_loss /= len(train_loader.dataset)
-        print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
-        fconv = open(os.path.join(output_path, 'convergence.csv'), 'a')
-        fconv.write('{},loss,{}\n'.format(epoch, train_loss))
-        fconv.close()
+            train_loss /= len(train_loader.dataset)
+            print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
+            fconv = open(os.path.join(output_path, 'image_training.csv'), 'a')
+            fconv.write('{},loss,{}\n'.format(epoch, train_loss))
+            fconv.close()
 
         # 验证
 
-        if (epoch + 1) % test_every == 0:
-
-            print('Validating ...')
-
-            valset.setmode(1)
-            model.eval()
-            val_probs = torch.FloatTensor(len(val_loader.dataset))
-            with torch.no_grad():
-                # 禁止反向传播
-                bar = tqdm(val_loader, total=len(val_loader))
-                for i, input in enumerate(bar):
-                    bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
-                                    batch="[{}/{}]".format(i + 1, len(val_loader)))
-                    # 把训练过的 model 在验证集上做一下
-                    val_output = model(input[0].to(device))
-                    val_output = torch.flatten(model.avgpool(val_output),1)
-                    val_output = F.softmax(model.fc(val_output), dim=1)
-                    val_probs[i * batch_size:i * batch_size + input[0].size(0)] \
-                        = val_output.detach()[:, 1].clone()
-
-            val_probs = val_probs.cpu().numpy()
-            val_groups = np.array(valset.patchIDX)
-
-            max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
-            max_prob[:] = np.nan
-            order = np.lexsort((val_probs, val_groups))
-            # 排序
-            val_groups = val_groups[order]
-            val_probs = val_probs[order]
-            # 取最大
-            val_index = np.empty(len(val_groups), 'bool')
-            val_index[-1] = True
-            val_index[:-1] = val_groups[1:] != val_groups[:-1]
-            max_prob[val_groups[val_index]] = val_probs[val_index]
-
-            pred = [1 if prob >= 0.5 else 0 for prob in max_prob]  # 每张切片由最大概率的 patch 得到的标签
-            err, fpr, fnr = calc_err(pred, valset.labels)
-            # 计算
-            print('\nEpoch: [{}/{}]\tError: {}\tFPR: {}\tFNR: {}\n'
-                  .format(epoch, total_epochs, err, fpr, fnr))
-            fconv = open(os.path.join(args.output, 'convergence.csv'), 'a')
-            fconv.write('{},error,{}\n'.format(epoch, err))
-            fconv.write('{},fpr,{}\n'.format(epoch, fpr))
-            fconv.write('{},fnr,{}\n'.format(epoch, fnr))
-            fconv.close()
-
-            # Save the best model
-            acc = 1 - (fpr + fnr) / 2.
-            if acc >= max_acc:
-                max_acc = acc
-                obj = {
-                    'epoch': epoch,
-                    'state_dict': model.state_dict(),
-                    'max_accuracy': max_acc,
-                    'optimizer': optimizer.state_dict()
-                }
-                torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
+        # if (epoch + 1) % test_every == 0:
+        #
+        #     print('Validating ...')
+        #
+        #     valset.setmode(1)
+        #     model.eval()
+        #     val_probs = torch.FloatTensor(len(val_loader.dataset))
+        #     with torch.no_grad():
+        #         bar = tqdm(val_loader, total=len(val_loader))
+        #         for i, input in enumerate(bar):
+        #             bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
+        #                             batch="[{}/{}]".format(i + 1, len(val_loader)))
+        #             # 把训练过的 model 在验证集上做一下
+        #             val_output = model(input[0].to(device))
+        #             val_output = F.softmax(model.fc_patch(val_output), dim=1)
+        #             val_probs[i * batch_size:i * batch_size + input[0].size(0)] \
+        #                 = val_output.detach()[:, 1].clone()
+        #
+        #     val_probs = val_probs.cpu().numpy()
+        #     val_groups = np.array(valset.patchIDX)
+        #
+        #     max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
+        #     max_prob[:] = np.nan
+        #     order = np.lexsort((val_probs, val_groups))
+        #     # 排序
+        #     val_groups = val_groups[order]
+        #     val_probs = val_probs[order]
+        #     # 取最大
+        #     val_index = np.empty(len(val_groups), 'bool')
+        #     val_index[-1] = True
+        #     val_index[:-1] = val_groups[1:] != val_groups[:-1]
+        #     max_prob[val_groups[val_index]] = val_probs[val_index]
+        #
+        #     pred = [1 if prob >= 0.5 else 0 for prob in max_prob]  # 每张切片由最大概率的 patch 得到的标签
+        #     err, fpr, fnr = calc_err(pred, valset.labels)
+        #     # 计算
+        #     print('\nEpoch: [{}/{}]\tError: {}\tFPR: {}\tFNR: {}\n'
+        #           .format(epoch, total_epochs, err, fpr, fnr))
+        #     fconv = open(os.path.join(args.output, 'convergence.csv'), 'a')
+        #     fconv.write('{},error,{}\n'.format(epoch, err))
+        #     fconv.write('{},fpr,{}\n'.format(epoch, fpr))
+        #     fconv.write('{},fnr,{}\n'.format(epoch, fnr))
+        #     fconv.close()
+        #
+        #     # Save the best model
+        #     acc = 1 - (fpr + fnr) / 2.
+        #     if acc >= max_acc:
+        #         max_acc = acc
+        #         obj = {
+        #             'epoch': epoch,
+        #             'state_dict': model.state_dict(),
+        #             'max_accuracy': max_acc,
+        #             'optimizer': optimizer.state_dict()
+        #         }
+        #         torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
 
 
 def calc_err(pred, real):
@@ -274,7 +281,8 @@ if __name__ == "__main__":
           total_epochs=args.epochs,
           test_every=args.test_every,
           model=model,
-          criterion=criterion,
+          criterion_cls=criterion_cls,
+          criterion_reg=criterion_reg,
           optimizer=optimizer,
           topk_pos=args.topk_pos,
           topk_neg=args.topk_neg,

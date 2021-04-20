@@ -5,3 +5,4 @@
 /.idea/*.iml
 *.ipynb
 .ipynb_checkpoints
+*.csv

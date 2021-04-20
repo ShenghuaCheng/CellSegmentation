@@ -17,7 +17,7 @@ def output_images(dataset, name, output_path='.', num_of_imgs=0):
         Image.fromarray(np.uint8(img)).save(os.path.join(output_path, '{}_{}.png'.format(name, i)))
 
 if __name__ == "__main__":
-    from datasets import LystoTestset
+    from dataset.datasets import LystoTestset
 
     imageSet_test = LystoTestset(filepath="data/testing.h5", interval=20, size=32, num_of_imgs=20)
     output_images(imageSet_test, 'test', './image', 20)
