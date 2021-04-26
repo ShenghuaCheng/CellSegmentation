@@ -87,14 +87,15 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
     assert mode in ("patch", "image")
 
+    # shuffle 只能是 False
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
     val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
     # open output file
-    fconv = open(os.path.join(output_path, 'convergence.csv'), 'w')
+    fconv = open(os.path.join(output_path, '{}_training.csv'.format(mode)), 'w')
     fconv.write('epoch,metric,value\n')
     fconv.close()
-    # 结果保存在output_path/convergence.csv
+    # 结果保存在 output_path/patch_training.csv 和 image_training.csv
 
     print('Start training ...')
     # if resume:
@@ -106,6 +107,8 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
         if mode == "patch":
             trainset.setmode(1)
             model.setmode("patch")
+            train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                                      pin_memory=False)
 
             # 获取实例分类概率
             # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
@@ -114,11 +117,11 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
             probs = torch.FloatTensor(len(train_loader.dataset))
             with torch.no_grad():
-                patch_bar = tqdm(train_loader, total=len(train_loader))
+                patch_bar = tqdm(train_loader, total=len(train_loader.dataset))
                 for i, input in enumerate(patch_bar):
                     patch_bar.set_postfix(step="patch forwarding",
                                           epoch="[{}/{}]".format(epoch, total_epochs),
-                                          batch="[{}/{}]".format(i + 1, len(train_loader)))
+                                          batch="[{}/{}]".format(i + 1, len(train_loader.dataset)))
                     # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
                     output = model(input[0].to(device))
                     output = F.softmax(output, dim=1)
@@ -171,19 +174,22 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
         elif mode == "image":
             trainset.setmode(3)
             model.setmode("image")
+            train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                                      pin_memory=False)
             model.train()
+
             train_loss = 0.
-            train_bar = tqdm(train_loader, total=len(train_loader))
-            for i, (data, label) in enumerate(train_bar):
+            train_bar = tqdm(train_loader, total=len(train_loader.dataset) // batch_size + 1)
+            for i, (data, label_cls, label_num) in enumerate(train_bar):
                 train_bar.set_postfix(step="{} training".format(mode),
                                       epoch="[{}/{}]".format(epoch, total_epochs),
-                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
+                                      batch="[{}/{}]".format(i + 1, len(train_loader.dataset) // batch_size + 1))
 
                 output = model(data.to(device))
                 optimizer.zero_grad()
 
-                loss_cls = criterion_cls(output, label.to(device))  # 图片分类损失
-                loss_reg = criterion_reg(output, label.to(device))  # 回归数目损失
+                loss_cls = criterion_cls(output[0], label_cls.to(device))  # 图片分类损失
+                loss_reg = criterion_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))  # 回归数目损失
                 loss = loss_cls + loss_reg
 
                 train_loss += loss.item() * data.size(0)
@@ -191,7 +197,7 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
                 optimizer.step()
 
             train_loss /= len(train_loader.dataset)
-            print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
+            print('Epoch: [{}/{}], Loss_cls: {:.4f}, Loss_reg: {:.4f}\n'.format(epoch, total_epochs, loss_cls, loss_reg))
             fconv = open(os.path.join(output_path, 'image_training.csv'), 'a')
             fconv.write('{},loss,{}\n'.format(epoch, train_loss))
             fconv.close()
@@ -270,9 +276,9 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="data/training.h5", transform=trans,
-                            interval=args.interval, size=64, num_of_imgs=51)
+                            interval=args.interval, size=32, num_of_imgs=2000)
     imageSet_val = LystoDataset(filepath="data/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=64, num_of_imgs=51)
+                                interval=args.interval, size=32, num_of_imgs=2000)
 
     train(imageSet, imageSet_val,
           mode="image",

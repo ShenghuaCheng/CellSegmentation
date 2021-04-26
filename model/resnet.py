@@ -95,9 +95,18 @@ class MILResNet(nn.Module):
         # encoder 以下部分
         self.avgpool_patch = nn.AdaptiveAvgPool2d((1, 1))
         self.fc_patch = nn.Linear(512 * block.expansion, num_classes)
-        self.avgpool_image = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc_image = nn.Linear(512 * block.expansion, num_classes)
-
+        self.avgpool_image = nn.AdaptiveAvgPool2d((5, 5))
+        self.fc_image_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
+        # 回归层参考了 AlexNet 的结构
+        self.fc_image_reg = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(512 * 5 * 5 * block.expansion, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 1)
+        )
         self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
 
         # 金字塔层级
@@ -121,9 +130,16 @@ class MILResNet(nn.Module):
         )
 
         # 图像上采样卷积层
-        # TODO: 通道数的问题
-        self.upsample1 = nn.Conv2d(self.image_channels, 32, kernel_size=1, stride=1)
-        self.upsample2 = nn.Conv2d(32, 32, kernel_size=1, stride=1)
+        self.upsample_conv1 = nn.Sequential(
+            nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+            nn.BatchNorm2d(self.image_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.upsample_conv2 = nn.Sequential(
+            nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+            nn.BatchNorm2d(self.image_channels),
+            nn.ReLU(inplace=True)
+        )
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -172,19 +188,22 @@ class MILResNet(nn.Module):
         elif self.mode == "image":
 
             # image_cls & image_reg
-            out = self.avgpool_image(x4)  # x: [N, 512, 5, 5]
-            out = self.fc_image(torch.flatten(out, 1))  # x: [N, 512 * 5 * 5]
+            out = self.avgpool_image(x4)  # [N, 512, 5, 5]
+            out_cls = self.fc_image_cls(torch.flatten(out, 1))  # [N, 2]
+            out_reg = self.fc_image_reg(torch.flatten(out, 1))  # [N, 1]
 
             # image_seg
             out_x4 = self.pyramid_10(x4)  # out_x4: [N, 32, 10, 10]
             out_x3 = self.pyramid_19(x3)  # out_x3: [N, 32, 19, 19]
             out_x2 = self.pyramid_38(x2)  # out_x2: [N, 32, 38, 38]
             out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear")
-            out_seg = self.upsample1(out_seg) + out_x3
+            out_seg = torch.cat([out_seg, out_x3], dim=1)  # 连接两层
+            out_seg = self.upsample_conv1(out_seg)  # 融合 x4 和 x3 的特征
             out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear")
-            out_seg = self.upsample2(out_seg) + out_x2
+            out_seg = torch.cat([out_seg, out_x2], dim=1)
+            out_seg = self.upsample_conv2(out_seg)  # [N, 32, 38, 38]
 
-            return out, out_seg
+            return out_cls, out_reg, out_seg
 
         else:
             raise Exception("Something wrong in setmode.")
