@@ -2,8 +2,6 @@ import os
 import numpy as np
 import argparse
 from tqdm import tqdm
-# import cv2
-# from PIL import Image
 
 import torch
 import torch.optim as optim
@@ -11,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+import sklearn.metrics as metrics
 
 import model.resnet as models
 
@@ -18,13 +17,14 @@ import model.resnet as models
 parser = argparse.ArgumentParser(description='Training')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
-parser.add_argument('--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
+parser.add_argument('--batch_size', type=int, default=32, help='mini-batch size (default: 32)')
+parser.add_argument('--image_mode', type=bool, default=True, help='using the image training part or not')
 parser.add_argument('--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int, help='test on val every (default: 1)')
-parser.add_argument('--topk_pos', default=5, type=int,
-                    help='top k tiles are from a single positive cell (default: 5, standard MIL)')
+parser.add_argument('--patches_per_pos', default=1, type=int,
+                    help='k tiles are from a single positive cell (default: 1, standard MIL)')
 parser.add_argument('--topk_neg', default=30, type=int,
                     help='top k tiles are from negative cells of an image (default: 30, standard MIL)')
 parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
@@ -59,42 +59,45 @@ criterion_cls = nn.CrossEntropyLoss()
 criterion_reg = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 os.environ['CUDA_VISIBLE_DEVICES'] = args.device
+device = torch.device("cuda:" + args.device if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 
-def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every, model,
-          criterion_cls, criterion_reg, optimizer, topk_pos, topk_neg, output_path):
-    """
+def train(trainset, valset, batch_size, image_mode, workers, total_epochs, test_every, model,
+          criterion_cls, criterion_reg, optimizer, patches_per_pos, topk_neg, output_path):
+    """one training epoch = patch mode -> image mode
+
     :param trainset:        训练数据集
     :param valset:          验证数据集
-    :param mode:            训练模式，["patch", "image"]，仅对 trainset 生效
-    :param batch_size:      Dataloader 打包的小 batch 大小
-    :param workers:         Dataloader 使用的进程数
-    :param total_epochs:    迭代次数
+    :param batch_size:      DataLoader 打包的小 batch 大小
+    :param image_mode:      是否启用全图训练模式
+    :param workers:         DataLoader 使用的进程数
+    :param total_epochs:    迭代总次数
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
     :param criterion_cls:   分类器损失函数
     :param criterion_reg:   回归损失函数
     :param optimizer:       优化器
-    :param topk_pos:        每次在**单个阳性细胞**上选取的 top-k patch 数
-    :param topk_neg:        每次在阴性细胞图像上选取的 top-k patch 数
-    :param output_path:     保存模型文件的目录
+    :param patches_per_pos: 在**单个阳性细胞**上选取的 patch 数 (topk_pos = patches_per_pos * label)
+    :param topk_neg:        每次在阴性细胞图像上选取的 top-k patch **总数**
+    :param output_path:     保存模型文件和训练数据结果的目录
     """
 
-    global max_acc, resume
+    global device, resume
 
-    assert mode in ("patch", "image")
-
-    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
-    val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
+    # shuffle 只能是 False
+    # 暂定对 patch 的训练和对 image 的训练所用的 batch_size 是一样的
+    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                              pin_memory=False)
+    val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers,
+                            pin_memory=False)
 
     # open output file
-    fconv = open(os.path.join(output_path, 'convergence.csv'), 'w')
-    fconv.write('epoch,metric,value\n')
+    fconv = open(os.path.join(output_path, 'training.csv'), 'w')
+    fconv.write('epoch,mode,value\n')
     fconv.close()
-    # 结果保存在output_path/convergence.csv
+    # 结果保存在 output_path/training.csv
 
     print('Start training ...')
     # if resume:
@@ -102,160 +105,252 @@ def train(trainset, valset, mode, batch_size, workers, total_epochs, test_every,
 
     for epoch in range(1, total_epochs + 1):
 
-        # patch mode
-        if mode == "patch":
-            trainset.setmode(1)
-            model.setmode("patch")
+        trainset.setmode(1)
+        model.setmode("patch")
+        model.eval()
+        # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
+        model.fc_patch = nn.Linear(model.fc_patch.in_features, 2).to(device)
+        probs = predict_patch(train_loader, batch_size, epoch, total_epochs)
 
-            # 获取实例分类概率
-            # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-            model.fc_patch = nn.Linear(model.fc_patch.in_features, 2)
-            model.eval()
+        sample(trainset, probs, patches_per_pos, topk_neg)
+        trainset.setmode(2)
+        model.train()
+        train_patch(train_loader, epoch, total_epochs, model, criterion_cls,
+                    optimizer, output_path)
 
-            probs = torch.FloatTensor(len(train_loader.dataset))
-            with torch.no_grad():
-                patch_bar = tqdm(train_loader, total=len(train_loader))
-                for i, input in enumerate(patch_bar):
-                    patch_bar.set_postfix(step="patch forwarding",
-                                          epoch="[{}/{}]".format(epoch, total_epochs),
-                                          batch="[{}/{}]".format(i + 1, len(train_loader)))
-                    # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
-                    output = model(input[0].to(device))
-                    output = F.softmax(output, dim=1)
-                    # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
-                    # input.size(0) 返回 batch 中的实例数量
-                    probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
-
-            # 找出 top-k
-            probs = probs.cpu().numpy()
-            groups = np.array(trainset.patchIDX)
-            order = np.lexsort((probs, groups))
-            dataset_length = trainset.__len__()
-
-            index = np.empty(dataset_length, 'bool')
-            for i in range(dataset_length):
-                # topk 是实际的 patch 选取数目，如果是阴性样本就直接选取设定的值，如果是阳性样本就使用坐标数目 × 设定的值
-                topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * topk_pos
-                index[i] = groups[i] != groups[(i + topk) % len(groups)]
-
-            # 根据分类，制作迭代使用的数据集
-            trainset.make_train_data(list(order[index]))
-
-            # patch training
-            trainset.setmode(2)
-            model.train()
-
-            train_loss = 0.
-            train_bar = tqdm(train_loader, total=len(train_loader))
-            for i, (data, label) in enumerate(train_bar):
-                train_bar.set_postfix(step="{} training".format(mode),
-                                      epoch="[{}/{}]".format(epoch, total_epochs),
-                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
-
-                output = model(data.to(device))
-
-                optimizer.zero_grad()
-                loss = criterion_cls(output, label.to(device))
-                train_loss += loss.item() * data.size(0)
-                loss.backward()
-                optimizer.step()
-
-            train_loss /= len(train_loader.dataset)
-            print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
-            fconv = open(os.path.join(output_path, 'patch_training.csv'), 'a')
-            fconv.write('{},loss,{}\n'.format(epoch, train_loss))
-            fconv.close()
-
-
-        # image mode = image_cls + image_reg + image_seg
-        elif mode == "image":
+        if image_mode:
             trainset.setmode(3)
             model.setmode("image")
             model.train()
-            train_loss = 0.
-            train_bar = tqdm(train_loader, total=len(train_loader))
-            for i, (data, label) in enumerate(train_bar):
-                train_bar.set_postfix(step="{} training".format(mode),
-                                      epoch="[{}/{}]".format(epoch, total_epochs),
-                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
+            train_image(train_loader, batch_size, epoch, total_epochs, model,
+                        criterion_cls, criterion_reg, optimizer, 1, 1, output_path)
 
-                output = model(data.to(device))
-                optimizer.zero_grad()
+        if (epoch + 1) % test_every == 0:
+            valset.setmode(1)
+            model.setmode("patch")
+            model.eval()
+            print('Validating ...')
+            # 把训练过的 model 在验证集上做一下
+            patch_probs = predict_patch(val_loader, batch_size, epoch, total_epochs)
+            validation_patch(valset, patch_probs, epoch, total_epochs)
 
-                loss_cls = criterion_cls(output, label.to(device))  # 图片分类损失
-                loss_reg = criterion_reg(output, label.to(device))  # 回归数目损失
-                loss = loss_cls + loss_reg
+            if image_mode:
+                model.setmode("image")
+                image_probs, reg, seg = predict_image(val_loader, batch_size, epoch, total_epochs)
+                validation_image(valset, image_probs, reg, seg, epoch, total_epochs)
+            # 每验证一次，保存模型
+            obj = {
+                'epoch': epoch,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict()
+            }
+            torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
 
-                train_loss += loss.item() * data.size(0)
-                loss.backward()
-                optimizer.step()
 
-            train_loss /= len(train_loader.dataset)
-            print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
-            fconv = open(os.path.join(output_path, 'image_training.csv'), 'a')
-            fconv.write('{},loss,{}\n'.format(epoch, train_loss))
-            fconv.close()
+def predict_patch(loader, batch_size, epoch, total_epochs):
+    """前馈推导一次模型，获取实例分类概率。
 
-        # 验证
+    :param loader:          训练集的迭代器
+    :param batch_size:      DataLoader 打包的小 batch 大小
+    :param epoch:           当前迭代次数
+    :param total_epochs:    迭代总次数
+    """
+    global device
 
-        # if (epoch + 1) % test_every == 0:
-        #
-        #     print('Validating ...')
-        #
-        #     valset.setmode(1)
-        #     model.eval()
-        #     val_probs = torch.FloatTensor(len(val_loader.dataset))
-        #     with torch.no_grad():
-        #         bar = tqdm(val_loader, total=len(val_loader))
-        #         for i, input in enumerate(bar):
-        #             bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
-        #                             batch="[{}/{}]".format(i + 1, len(val_loader)))
-        #             # 把训练过的 model 在验证集上做一下
-        #             val_output = model(input[0].to(device))
-        #             val_output = F.softmax(model.fc_patch(val_output), dim=1)
-        #             val_probs[i * batch_size:i * batch_size + input[0].size(0)] \
-        #                 = val_output.detach()[:, 1].clone()
-        #
-        #     val_probs = val_probs.cpu().numpy()
-        #     val_groups = np.array(valset.patchIDX)
-        #
-        #     max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
-        #     max_prob[:] = np.nan
-        #     order = np.lexsort((val_probs, val_groups))
-        #     # 排序
-        #     val_groups = val_groups[order]
-        #     val_probs = val_probs[order]
-        #     # 取最大
-        #     val_index = np.empty(len(val_groups), 'bool')
-        #     val_index[-1] = True
-        #     val_index[:-1] = val_groups[1:] != val_groups[:-1]
-        #     max_prob[val_groups[val_index]] = val_probs[val_index]
-        #
-        #     pred = [1 if prob >= 0.5 else 0 for prob in max_prob]  # 每张切片由最大概率的 patch 得到的标签
-        #     err, fpr, fnr = calc_err(pred, valset.labels)
-        #     # 计算
-        #     print('\nEpoch: [{}/{}]\tError: {}\tFPR: {}\tFNR: {}\n'
-        #           .format(epoch, total_epochs, err, fpr, fnr))
-        #     fconv = open(os.path.join(args.output, 'convergence.csv'), 'a')
-        #     fconv.write('{},error,{}\n'.format(epoch, err))
-        #     fconv.write('{},fpr,{}\n'.format(epoch, fpr))
-        #     fconv.write('{},fnr,{}\n'.format(epoch, fnr))
-        #     fconv.close()
-        #
-        #     # Save the best model
-        #     acc = 1 - (fpr + fnr) / 2.
-        #     if acc >= max_acc:
-        #         max_acc = acc
-        #         obj = {
-        #             'epoch': epoch,
-        #             'state_dict': model.state_dict(),
-        #             'max_accuracy': max_acc,
-        #             'optimizer': optimizer.state_dict()
-        #         }
-        #         torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
+    probs = torch.Tensor(len(loader.dataset))
+    with torch.no_grad():
+        patch_bar = tqdm(loader, total=len(loader.dataset) // batch_size)
+        for i, input in enumerate(patch_bar):
+            patch_bar.set_postfix(step="patch forwarding",
+                                  epoch="[{}/{}]".format(epoch, total_epochs),
+                                  batch="[{}/{}]".format(i + 1, len(loader.dataset) // batch_size))
+            # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
+            output = model(input[0].to(device))
+            output = F.softmax(output, dim=1)
+            # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
+            # input.size(0) 返回 batch 中的实例数量
+            probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
+    return probs.cpu().numpy()
+
+
+def sample(trainset, probs, patches_per_pos, topk_neg):
+    """找出概率为 top-k 的补丁，制作迭代使用的数据集。
+
+    :param trainset:        训练数据集
+    :param probs:           predict_patch() 得到的补丁概率
+    :param patches_per_pos: 在**单个阳性细胞**上选取的 patch 数 (topk_pos = patches_per_pos * label)
+    :param topk_neg:        每次在阴性细胞图像上选取的 top-k patch **总数**
+    """
+
+    groups = np.array(trainset.patchIDX)
+    order = np.lexsort((probs, groups))
+
+    index = np.empty(len(trainset), 'bool')
+    for i in range(len(trainset)):
+        topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * patches_per_pos
+        index[i] = groups[i] != groups[(i + topk) % len(groups)]
+
+    trainset.make_train_data(list(order[index]))
+
+
+def predict_image(loader, batch_size, epoch, total_epochs):
+    """前馈推导一次模型，获取图像级的分类概率和回归预测值。
+    """
+
+    probs = torch.Tensor(len(loader.dataset))
+    with torch.no_grad():
+        image_bar = tqdm(loader, total=len(loader.dataset) // batch_size + 1)
+        for i, (data, label_cls, label_num) in enumerate(image_bar):
+            image_bar.set_postfix(step="image forwarding",
+                                  epoch="[{}/{}]".format(epoch, total_epochs),
+                                  batch="[{}/{}]".format(i + 1, len(loader.dataset) // batch_size + 1))
+            output = model(data.to(device))
+            output_cls = F.softmax(output[0], dim=1)
+            probs[i * batch_size:i * batch_size + input[0].size(0)] = output_cls.detach()[:, 1].clone()
+    return probs.cpu().numpy(), output[1].cpu(), output[2].cpu()
+
+
+def train_patch(loader, epoch, total_epochs, model, criterion, optimizer, output_path):
+    """Patch training for one epoch.
+
+    :param loader:          训练集的迭代器
+    :param epoch:           当前迭代次数
+    :param total_epochs:    迭代总次数
+    :param model:           网络模型
+    :param criterion:       用于补丁级训练的损失函数（criterion_cls）
+    :param optimizer:       优化器
+    :param output_path:     保存训练结果数据的目录
+    """
+    global device
+
+    train_loss = 0.
+    train_bar = tqdm(loader, total=len(loader))
+    for i, (data, label) in enumerate(train_bar):
+        train_bar.set_postfix(step="patch training",
+                              epoch="[{}/{}]".format(epoch, total_epochs),
+                              batch="[{}/{}]".format(i + 1, len(loader)))
+
+        output = model(data.to(device))
+
+        optimizer.zero_grad()
+        loss = criterion(output, label.to(device))
+        train_loss += loss.item() * data.size(0)
+        loss.backward()
+        optimizer.step()
+
+    train_loss /= len(loader.dataset)
+    print('Epoch: [{}/{}], Loss: {:.4f}'.format(epoch, total_epochs, train_loss))
+    fconv = open(os.path.join(output_path, 'training.csv'), 'a')
+    fconv.write('{},patch,{}\n'.format(epoch, train_loss))
+    fconv.close()
+
+
+def train_image(loader, batch_size, epoch, total_epochs, model, criterion_cls, criterion_reg, optimizer, alpha, beta,
+                output_path):
+    """Image training for one epoch. image mode = image_cls + image_reg + image_seg
+
+    :param loader:          训练集的迭代器
+    :param batch_size:      DataLoader 打包的小 batch 大小
+    :param epoch:           当前迭代次数
+    :param total_epochs:    迭代总次数
+    :param model:           网络模型
+    :param criterion_cls:   分类器损失函数
+    :param criterion_reg:   回归损失函数
+    :param optimizer:       优化器
+    :param alpha:           loss 参数
+    :param beta:            loss 参数
+    :param output_path:     保存训练结果数据的目录
+    """
+    global device
+
+    train_loss = 0.
+    train_bar = tqdm(loader, total=len(loader.dataset) // batch_size + 1)
+    for i, (data, label_cls, label_num) in enumerate(train_bar):
+        train_bar.set_postfix(step="image training",
+                              epoch="[{}/{}]".format(epoch, total_epochs),
+                              batch="[{}/{}]".format(i + 1, len(loader.dataset) // batch_size + 1))
+
+        output = model(data.to(device))
+        optimizer.zero_grad()
+
+        loss_cls = criterion_cls(output[0], label_cls.to(device))  # 图片分类损失
+        loss_reg = criterion_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))  # 回归数目损失
+        loss = alpha * loss_cls + beta * loss_reg
+
+        train_loss += loss.item() * data.size(0)
+        loss.backward()
+        optimizer.step()
+
+    train_loss /= len(loader.dataset)
+    print('Epoch: [{}/{}], Loss_cls: {:.4f}, Loss_reg: {:.4f}\n'.format(epoch, total_epochs, loss_cls, loss_reg))
+    fconv = open(os.path.join(output_path, 'training.csv'), 'a')
+    fconv.write('{},image_cls,{}\n'.format(epoch, loss_cls))
+    fconv.write('{},image_reg,{}\n'.format(epoch, loss_reg))
+    fconv.close()
+
+
+def validation_patch(valset, probs, epoch, total_epochs, output_path):
+    """patch mode 的验证"""
+
+    global max_acc
+    val_groups = np.array(valset.patchIDX)
+
+    max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
+    max_prob[:] = np.nan
+    order = np.lexsort((probs, val_groups))
+    # 排序
+    val_groups = val_groups[order]
+    val_probs = probs[order]
+    # 取最大
+    val_index = np.empty(len(val_groups), 'bool')
+    val_index[-1] = True
+    val_index[:-1] = val_groups[1:] != val_groups[:-1]
+    max_prob[val_groups[val_index]] = val_probs[val_index]
+
+    # 计算错误率、FPR、FNR
+    probs = np.round(max_prob)  # 每张切片由最大概率的 patch 得到的标签
+    err, fpr, fnr = calc_err(probs, valset.labels)
+    print('\nEpoch: [{}/{}]\tPatch Error: {}\tPatch FPR: {}\tPatch FNR: {}\n'
+          .format(epoch, total_epochs, err, fpr, fnr))
+    fconv = open(os.path.join(output_path, 'validation.csv'), 'a')
+    fconv.write('{},patch_error,{}\n'.format(epoch, err))
+    fconv.write('{},patch_fpr,{}\n'.format(epoch, fpr))
+    fconv.write('{},patch_fnr,{}\n'.format(epoch, fnr))
+    fconv.close()
+
+    # Save the best model
+    # acc = 1 - (fpr + fnr) / 2.
+    # if acc >= max_acc:
+    #     max_acc = acc
+    #     obj = {
+    #         'epoch': epoch,
+    #         'state_dict': model.state_dict(),
+    #         'max_accuracy': max_acc,
+    #         'optimizer': optimizer.state_dict()
+    #     }
+    #     torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
+
+
+def validation_image(valset, probs, reg, seg, epoch, total_epochs, output_path):
+
+    """image mode 的验证"""
+    probs = np.round(probs)
+    err, fpr, fnr = calc_err(probs, valset.labels)
+    mae = metrics.mean_absolute_error(valset.labels, reg)
+    mse = metrics.mean_squared_error(valset.labels, reg)
+    print('\nEpoch: [{}/{}]\tImage Error: {}\tImage FPR: {}\tImage FNR: {}\nMAE: {}\tMSE: {}'
+          .format(epoch, total_epochs, err, fpr, fnr, mae, mse))
+    fconv = open(os.path.join(output_path, 'validation.csv'), 'a')
+    fconv.write('{},image_err,{}\n'.format(epoch, err))
+    fconv.write('{},image_fpr,{}\n'.format(epoch, fpr))
+    fconv.write('{},image_fnr,{}\n'.format(epoch, fnr))
+    fconv.write('{},mae,{}\n'.format(epoch, fpr))
+    fconv.write('{},mse,{}\n'.format(epoch, fnr))
+    fconv.close()
 
 
 def calc_err(pred, real):
+    """计算分类任务的错误率、假阳性率、假阴性率"""
     pred = np.array(pred)
     real = np.array(real)
     neq = np.not_equal(pred, real)
@@ -270,13 +365,13 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="data/training.h5", transform=trans,
-                            interval=args.interval, size=64, num_of_imgs=51)
+                            interval=args.interval, size=32, num_of_imgs=500)
     imageSet_val = LystoDataset(filepath="data/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=64, num_of_imgs=51)
+                                interval=args.interval, size=32, num_of_imgs=500)
 
     train(imageSet, imageSet_val,
-          mode="image",
           batch_size=args.batch_size,
+          image_mode=args.image_mode,
           workers=args.workers,
           total_epochs=args.epochs,
           test_every=args.test_every,
@@ -284,6 +379,6 @@ if __name__ == "__main__":
           criterion_cls=criterion_cls,
           criterion_reg=criterion_reg,
           optimizer=optimizer,
-          topk_pos=args.topk_pos,
+          patches_per_pos=args.patches_per_pos,
           topk_neg=args.topk_neg,
           output_path=args.output)
