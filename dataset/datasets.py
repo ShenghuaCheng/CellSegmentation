@@ -62,6 +62,8 @@ class LystoDataset(Dataset):
             self.patches.extend(p) # 获取 32 * 32 的实例
             self.patchIDX.extend([patchIDX] * len(p))
 
+        assert len(self.labels) == len(self.images)
+
         self.mode = None
         self.transform = transform
 
@@ -106,10 +108,12 @@ class LystoDataset(Dataset):
         # image mode
         elif self.mode == 3:
             image = self.images[idx]
-            label = self.labels[idx]
+            label_cls = 0 if self.labels[idx] == 0 else 1
+            label_num = self.labels[idx]
+
             if self.transform is not None:
                 image = self.transform(image)
-            return image, label
+            return image, label_cls, label_num
         
         else:
             raise Exception("Something wrong in setmode.")
