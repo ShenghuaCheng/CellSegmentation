@@ -2,8 +2,10 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="b1383ae0-f99f-4dc6-91b8-d86a8cbc84a8" name="默认变更列表" comment="changed .gitignore">
-      <change afterPath="$PROJECT_DIR$/utils/summary_param.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/model/resnet.py" beforeDir="false" afterPath="$PROJECT_DIR$/model/resnet.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/train.py" beforeDir="false" afterPath="$PROJECT_DIR$/train.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/summary_param.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/summary_param.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -45,8 +47,12 @@
     <property name="SHARE_PROJECT_CONFIGURATION_FILES" value="true" />
     <property name="WebServerToolWindowFactoryState" value="false" />
     <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="node.js.detected.package.eslint" value="true" />
+    <property name="node.js.detected.package.tslint" value="true" />
+    <property name="node.js.selected.package.eslint" value="(autodetect)" />
+    <property name="node.js.selected.package.tslint" value="(autodetect)" />
     <property name="nodejs_package_manager_path" value="npm" />
-    <property name="settings.editor.selected.configurable" value="preferences.pluginManager" />
+    <property name="settings.editor.selected.configurable" value="vcs.Git" />
   </component>
   <component name="RunManager" selected="Python.summary_param">
     <configuration name="summary_param" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
@@ -121,6 +127,19 @@
       <workItem from="1619437045912" duration="632000" />
       <workItem from="1619437977658" duration="385000" />
       <workItem from="1619438449161" duration="6097000" />
+      <workItem from="1619450848620" duration="137000" />
+      <workItem from="1619514873012" duration="144000" />
+      <workItem from="1619569638997" duration="6848000" />
+      <workItem from="1619584033402" duration="48000" />
+      <workItem from="1619589995593" duration="5220000" />
+      <workItem from="1619600630395" duration="1079000" />
+      <workItem from="1619607235369" duration="965000" />
+      <workItem from="1619616410460" duration="2269000" />
+      <workItem from="1619679836433" duration="236000" />
+      <workItem from="1619682222736" duration="209000" />
+      <workItem from="1619693515289" duration="1057000" />
+      <workItem from="1619852310132" duration="599000" />
+      <workItem from="1619871956179" duration="4870000" />
     </task>
     <task id="LOCAL-00001" summary="changed .gitignore">
       <created>1618385224751</created>
@@ -194,26 +213,28 @@
     <MESSAGE value="add pyramid module" />
     <MESSAGE value="update image_cls &amp; image_reg modes" />
     <MESSAGE value="add dropout" />
-    <option name="LAST_COMMIT_MESSAGE" value="add dropout" />
+    <MESSAGE value="add summary_param.py" />
+    <option name="LAST_COMMIT_MESSAGE" value="add summary_param.py" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
       <breakpoints>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/train.py</url>
-          <line>291</line>
-          <option name="timeStamp" value="8" />
+          <line>371</line>
+          <option name="timeStamp" value="10" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
     <watches-manager>
       <configuration name="PythonConfigurationType">
         <watch expression="x" />
+        <watch expression="x" />
       </configuration>
     </watches-manager>
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/CellSegmentation$summary_param.coverage" NAME="summary_param 覆盖结果" MODIFIED="1619443963427" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/utils" />
-    <SUITE FILE_PATH="coverage/CellSegmentation$train.coverage" NAME="train 覆盖结果" MODIFIED="1619443523141" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/CellSegmentation$summary_param.coverage" NAME="summary_param 覆盖结果" MODIFIED="1619620220958" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/utils" />
+    <SUITE FILE_PATH="coverage/CellSegmentation$train.coverage" NAME="train 覆盖结果" MODIFIED="1619574953561" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

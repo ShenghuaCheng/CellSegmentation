@@ -107,6 +107,11 @@ class MILResNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(128, 1)
         )
+        # self.fc_image_reg = nn.Sequential(
+        #     nn.Linear(512 * 5 * 5 * block.expansion, 512),
+        #     nn.Linear(512, 128),
+        #     nn.Linear(128, 1)
+        # )
         self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
 
         # 金字塔层级
@@ -196,10 +201,10 @@ class MILResNet(nn.Module):
             out_x4 = self.pyramid_10(x4)  # out_x4: [N, 32, 10, 10]
             out_x3 = self.pyramid_19(x3)  # out_x3: [N, 32, 19, 19]
             out_x2 = self.pyramid_38(x2)  # out_x2: [N, 32, 38, 38]
-            out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear")
+            out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear", align_corners=True)
             out_seg = torch.cat([out_seg, out_x3], dim=1)  # 连接两层
             out_seg = self.upsample_conv1(out_seg)  # 融合 x4 和 x3 的特征
-            out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear")
+            out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear", align_corners=True)
             out_seg = torch.cat([out_seg, out_x2], dim=1)
             out_seg = self.upsample_conv2(out_seg)  # [N, 32, 38, 38]
 
