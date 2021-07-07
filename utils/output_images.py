@@ -16,6 +16,7 @@ def output_images(dataset, name, output_path='.', num_of_imgs=0):
             break
         Image.fromarray(np.uint8(img)).save(os.path.join(output_path, '{}_{}.png'.format(name, i)))
 
+
 if __name__ == "__main__":
     from dataset.datasets import LystoTestset
 

@@ -95,10 +95,10 @@ class MILResNet(nn.Module):
         # encoder 以下部分
         self.avgpool_patch = nn.AdaptiveAvgPool2d((1, 1))
         self.fc_patch = nn.Linear(512 * block.expansion, num_classes)
-        self.avgpool_image = nn.AdaptiveAvgPool2d((5, 5))
-        self.fc_image_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
+        self.avgpool_slide = nn.AdaptiveAvgPool2d((5, 5))
+        self.fc_slide_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
         # 回归层参考了 AlexNet 的结构
-        self.fc_image_reg = nn.Sequential(
+        self.fc_slide_reg = nn.Sequential(
             nn.Dropout(),
             nn.Linear(512 * 5 * 5 * block.expansion, 512),
             nn.ReLU(inplace=True),
@@ -107,12 +107,7 @@ class MILResNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(128, 1)
         )
-        # self.fc_image_reg = nn.Sequential(
-        #     nn.Linear(512 * 5 * 5 * block.expansion, 512),
-        #     nn.Linear(512, 128),
-        #     nn.Linear(128, 1)
-        # )
-        self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
+        self.image_channels = 32  # slide mode 中金字塔卷积的输出通道数
 
         # 金字塔层级
         self.pyramid_10 = nn.Sequential(
@@ -190,14 +185,14 @@ class MILResNet(nn.Module):
 
             return x
 
-        elif self.mode == "image":
+        elif self.mode == "slide":
 
-            # image_cls & image_reg
-            out = self.avgpool_image(x4)  # [N, 512, 5, 5]
-            out_cls = self.fc_image_cls(torch.flatten(out, 1))  # [N, 2]
-            out_reg = self.fc_image_reg(torch.flatten(out, 1))  # [N, 1]
+            # slide_cls & slide_reg
+            out = self.avgpool_slide(x4)  # [N, 512, 5, 5]
+            out_cls = self.fc_slide_cls(torch.flatten(out, 1))  # [N, 2]
+            out_reg = self.fc_slide_reg(torch.flatten(out, 1))  # [N, 1]
 
-            # image_seg
+            # slide_seg
             out_x4 = self.pyramid_10(x4)  # out_x4: [N, 32, 10, 10]
             out_x3 = self.pyramid_19(x3)  # out_x3: [N, 32, 19, 19]
             out_x2 = self.pyramid_38(x2)  # out_x2: [N, 32, 38, 38]

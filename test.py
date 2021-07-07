@@ -2,9 +2,9 @@ import os
 import numpy as np
 import argparse
 from tqdm import tqdm
+import csv
 import cv2
 from PIL import Image
-import csv
 
 import torch
 from torch import nn
@@ -13,17 +13,18 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 
 import model.resnet as models
+from train import predict_patch
 
 parser = argparse.ArgumentParser(description='Testing & Heatmap')
-parser.add_argument('--model', type=str, default='checkpoint_best.pth', help='path to pretrained model')
-parser.add_argument('--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
-parser.add_argument('--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
-parser.add_argument('--topk', default=10, type=int,
+parser.add_argument('-m', '--model', type=str, default='checkpoint_best.pth', help='path to pretrained model')
+parser.add_argument('-b', '--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
+parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
+parser.add_argument('-k', '--topk', default=10, type=int,
                     help='top k tiles are assumed to be of the same class as the slide (default: 10, standard MIL)')
 parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
-parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
-parser.add_argument('--output', type=str, default='.', help='path of output details .csv file')
+parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
+parser.add_argument('-o', '--output', type=str, default='.', help='path of output details .csv file')
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -52,7 +53,7 @@ def test(testset, batch_size, workers, model, topk, output_path):
     :param batch_size:      Dataloader 打包的小 batch 大小
     :param workers:         Dataloader 使用的进程数
     :param model:           网络模型
-    :param topk:            每次选取的 top-k 实例个数
+    :param topk:            概率最大的 k 个补丁
     :param output_path:     保存模型文件的目录
     """
 
@@ -70,16 +71,43 @@ def test(testset, batch_size, workers, model, topk, output_path):
     print('Start testing ...')
 
     # 同训练第一部分
+    model.setmode("patch")
     model.eval()
-    probs = torch.FloatTensor(len(test_loader.dataset))
-    with torch.no_grad():
-        bar = tqdm(enumerate(test_loader), total=len(test_loader))
-        for i, input in bar:
-            bar.set_postfix(batch="[{}/{}]".format(i + 1, len(test_loader)))
-            output = F.softmax(model(input.to(device)), dim=1)
-            probs[i * batch_size:i * batch_size + input.size(0)] = output.detach()[:, 1].clone()
+    probs = predict_patch(test_loader, batch_size)
+    max_patches, max_probs = rank(testset, probs, topk)
 
-    probs = probs.cpu().numpy()
+    # 生成热图
+    heatmap(testset, max_patches, max_probs, topk, output_path)
+
+def predict_patch(loader, batch_size):
+    """对测试集滑动预测。
+
+    :param loader:          训练集的迭代器
+    :param batch_size:      DataLoader 打包的小 batch 大小
+    """
+    global device
+
+    probs = torch.Tensor(len(loader.dataset))
+    with torch.no_grad():
+        patch_bar = tqdm(loader, total=len(loader))
+        for i, input in enumerate(patch_bar):
+            patch_bar.set_postfix(step="testing",
+                                  batch="[{}/{}]".format(i + 1, len(loader)))
+            output = model(input.to(device)) # input: [b, c, h, w]
+            output = F.softmax(output, dim=1)
+            probs[i * batch_size:i * batch_size + input.size(0)] = output.detach()[:, 1].clone()
+    return probs.cpu().numpy()
+
+
+def rank(testset, probs, topk):
+    """寻找最大概率的 k 个 patch ，用于作图。
+
+    :param testset:     测试集
+    :param probs:       求得的概率
+    :param topk:        取出的补丁数
+    :return:            取出的补丁以及对应的概率
+    """
+
     groups = np.array(testset.patchIDX)
     patches = np.array(testset.patches)
 
@@ -92,34 +120,48 @@ def test(testset, batch_size, workers, model, topk, output_path):
     index[-topk:] = True
     index[:-topk] = groups[topk:] != groups[:-topk]
 
-    max_probs = probs[index]
-    max_patches = patches[index]
+    return patches[index], probs[index]
 
-    # 生成热图
+
+def heatmap(testset, patches, probs, topk, output_path):
+    """把预测得到的阳性细胞区域标在图上。
+
+    :param testset:         测试集
+    :param patches:         要标注的补丁
+    :param probs:           补丁对应的概率
+    :param topk:            标注的补丁数
+    :param output_path:     图像存储路径
+    """
+
     for i, img in enumerate(testset.images):
         mask = np.zeros((img.shape[0], img.shape[1]))
         for idx in range(topk):
-            patch_mask = np.full((testset.size, testset.size), max_probs[idx + i * topk])
-            grid = (int(max_patches[idx + i * topk][0]), int(max_patches[idx + i * topk][1]))
+            patch_mask = np.full((testset.size, testset.size), probs[idx + i * topk])
+            grid = list(map(int, patches[idx + i * topk]))
             mask[grid[0]: grid[0] + testset.size,
                  grid[1]: grid[1] + testset.size] = patch_mask
             # 输出信息
-            print("prob_{}:{}".format(i, max_probs[idx + i * topk]))
+            print("prob_{}:{}".format(i, probs[idx + i * topk]))
             fconv = open(os.path.join(output_path, 'pred.csv'), 'a', newline="")
             w = csv.writer(fconv)
-            w.writerow(['{}'.format(grid), max_probs[idx + i * topk]])
+            w.writerow(['{}'.format(grid), probs[idx + i * topk]])
             fconv.close()
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
         img = img * 0.5 + mask * 0.5
-        Image.fromarray(np.uint8(img)).save('output/test_{}.png'.format(i))
+        Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(i)))
 
 
 if __name__ == "__main__":
     from dataset.datasets import LystoTestset
 
-    print('Loading test set ...')
+    print("Testing settings: ")
+    print("Model: {} | Patches batch size: {} | Top-k: {}"
+          .format(args.model, args.batch_size, args.topk))
+
+    print('Loading Dataset ...')
     imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans,
                                  interval=args.interval, size=args.patch_size, num_of_imgs=20)
 
-    test(imageSet_test, batch_size=args.batch_size, workers=args.workers, model=model, topk=args.topk, output_path='.')
+    test(imageSet_test, batch_size=args.batch_size, workers=args.workers, model=model, topk=args.topk,
+         output_path='./output/7_7_10e_patchonly')

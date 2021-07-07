@@ -105,15 +105,15 @@ class LystoDataset(Dataset):
                 patch = self.transform(patch)
             return patch, label
 
-        # image mode
+        # slide mode
         elif self.mode == 3:
-            image = self.images[idx]
+            slide = self.images[idx]
             label_cls = 0 if self.labels[idx] == 0 else 1
             label_num = self.labels[idx]
 
             if self.transform is not None:
-                image = self.transform(image)
-            return image, label_cls, label_num
+                slide = self.transform(slide)
+            return slide, label_cls, label_num
         
         else:
             raise Exception("Something wrong in setmode.")

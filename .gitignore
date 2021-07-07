@@ -2,7 +2,9 @@
 /output/
 /image/
 /data/
+/runs/
 /.idea/*.iml
+*.pth
 *.ipynb
 .ipynb_checkpoints
 *.csv
