@@ -64,7 +64,7 @@ def test(testset, batch_size, workers, model, topk, output_path):
     w = csv.writer(fconv)
     w.writerow(['patch_size', '{}'.format(testset.size)])
     w.writerow(['interval', '{}'.format(testset.interval)])
-    w.writerow(['grid', 'prob'])
+    w.writerow(['idx', 'grid', 'prob'])
     fconv.close()
     # 热图中各个 patch 的信息保存在 output_path/pred.csv
 
@@ -144,7 +144,7 @@ def heatmap(testset, patches, probs, topk, output_path):
             print("prob_{}:{}".format(i, probs[idx + i * topk]))
             fconv = open(os.path.join(output_path, 'pred.csv'), 'a', newline="")
             w = csv.writer(fconv)
-            w.writerow(['{}'.format(grid), probs[idx + i * topk]])
+            w.writerow([i, '{}'.format(grid), probs[idx + i * topk]])
             fconv.close()
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)

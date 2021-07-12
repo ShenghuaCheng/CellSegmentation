@@ -73,10 +73,13 @@ class LystoDataset(Dataset):
     def make_train_data(self, idxs, shuffle=True):
         # 用于 mode 2，制作训练用数据集
         # 当 patch 对应的切片的 label 为 n 时标签为 1 ，否则为 0
-        self.train_data = [(self.patchIDX[i], self.patches[i],
-                            0 if self.labels[self.patchIDX[i]] == 0 else 1) for i in idxs]
+        self.train_data = np.asarray([(self.patchIDX[i], self.patches[i],
+                                     0 if self.labels[self.patchIDX[i]] == 0 else 1) for i in idxs])
         if shuffle:
             self.train_data = random.sample(self.train_data, len(self.train_data))
+
+        # 返回正负样本数目
+        return self.train_data.sum(axis=0)[2], self.train_data.shape[0] - self.train_data.sum(axis=0)[2]
 
     def __getitem__(self, idx):
 
@@ -86,32 +89,31 @@ class LystoDataset(Dataset):
         if self.mode == 1:
             (x, y) = self.patches[idx]
             patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
-            if self.transform is not None:
+            if self.transform:
                 patch = self.transform(patch)
 
             label = self.labels[self.patchIDX[idx]]
             return patch, label
 
-        # 训练数据模式 (patch mode)
+        # patch training mode
         elif self.mode == 2:
-            patchIDX, patch_grid, label = self.train_data[idx]
-            (x, y) = patch_grid
+            patchIDX, (x, y), label = self.train_data[idx]
             patch = self.images[patchIDX][x:x + self.size - 1, y:y + self.size - 1]
-            ## for visualized testing
-            # if idx < 50:
-            #     from PIL import Image
-            #     Image.fromarray(patch).save('test/img{}_patch{}_label{}.png'.format(patchIDX, idx, label))
-            if self.transform is not None:
+            # visualize test
+            if idx < 50:
+                from PIL import Image
+                Image.fromarray(patch).save('test/img{}_patch{}_label{}.png'.format(patchIDX, idx, label))
+            if self.transform:
                 patch = self.transform(patch)
-            return patch, label
+            return patch, label, patchIDX
 
-        # slide mode
+        # slide training mode
         elif self.mode == 3:
             slide = self.images[idx]
             label_cls = 0 if self.labels[idx] == 0 else 1
             label_num = self.labels[idx]
 
-            if self.transform is not None:
+            if self.transform:
                 slide = self.transform(slide)
             return slide, label_cls, label_num
         

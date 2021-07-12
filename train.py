@@ -43,6 +43,7 @@ else:
 
 max_acc = 0
 resume = False
+verbose = True
 
 print('Init Model ...')
 
@@ -57,7 +58,7 @@ if args.resume:
 trans = transforms.ToTensor()
 
 criterion_cls = nn.CrossEntropyLoss()
-criterion_reg = nn.MSELoss()
+criterion_reg = nn.SmoothL1Loss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.device
@@ -111,14 +112,16 @@ def train(trainset, valset, batch_size, slide_mode, workers, total_epochs, test_
     with SummaryWriter() as writer:
         for epoch in range(1, total_epochs + 1):
 
+            # Forwarding step
             trainset.setmode(1)
             model.setmode("patch")
             model.eval()
             # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
             model.fc_patch = nn.Linear(model.fc_patch.in_features, 2).to(device)
             probs = predict_patch(train_loader, batch_size, epoch, total_epochs)
-
             sample(trainset, probs, patches_per_pos, topk_neg)
+
+            # Alternative training step
             trainset.setmode(2)
             model.train()
             patch_loss = train_patch(train_loader, epoch, total_epochs, model, criterion_cls,
@@ -129,10 +132,11 @@ def train(trainset, valset, batch_size, slide_mode, workers, total_epochs, test_
                 trainset.setmode(3)
                 model.setmode("slide")
                 model.train()
-                slide_loss = train_slide(train_loader, batch_size, epoch, total_epochs, model, criterion_cls, criterion_reg,
-                                         optimizer, 1, 1, output_path)
+                slide_loss = train_slide(train_loader, batch_size, epoch, total_epochs, model, criterion_cls,
+                                         criterion_reg, optimizer, 1, 1, output_path)
                 writer.add_scalar('slide loss', slide_loss, epoch)
 
+            # Validating step
             if (epoch + 1) % test_every == 0:
                 valset.setmode(1)
                 model.setmode("patch")
@@ -201,6 +205,8 @@ def sample(trainset, probs, patches_per_pos, topk_neg):
     :param topk_neg:        每次在阴性细胞图像上选取的 top-k patch **总数**
     """
 
+    global verbose
+
     groups = np.array(trainset.patchIDX)
     order = np.lexsort((probs, groups))
 
@@ -209,8 +215,9 @@ def sample(trainset, probs, patches_per_pos, topk_neg):
         topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * patches_per_pos
         index[i] = groups[i] != groups[(i + topk) % len(groups)]
 
-    trainset.make_train_data(list(order[index]))
-
+    p, n = trainset.make_train_data(list(order[index]))
+    if verbose:
+        print("Training data is sampled. \nPos samples: {} | Neg samples: {}".format(p, n))
 
 def predict_slide(loader, batch_size, epoch, total_epochs):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。
@@ -248,7 +255,7 @@ def train_patch(loader, epoch, total_epochs, model, criterion, optimizer, output
 
     train_loss = 0.
     train_bar = tqdm(loader, total=len(loader))
-    for i, (data, label) in enumerate(train_bar):
+    for i, (data, label, _) in enumerate(train_bar):
         train_bar.set_postfix(step="patch training",
                               epoch="[{}/{}]".format(epoch, total_epochs),
                               batch="[{}/{}]".format(i + 1, len(loader)))
