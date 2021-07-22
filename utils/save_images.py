@@ -2,7 +2,7 @@ import os
 import numpy as np
 from PIL import Image
 
-def output_images(dataset, name, output_path='.', num_of_imgs=0):
+def save_images(dataset, name, output_path='.', num_of_imgs=0):
     """
     把 hdf5 数据中的图像以 <name>_<idx>.png 的名称导出。
     :param dataset:     LystoDataset
@@ -21,4 +21,4 @@ if __name__ == "__main__":
     from dataset.datasets import LystoTestset
 
     imageSet_test = LystoTestset(filepath="data/testing.h5", interval=20, size=32, num_of_imgs=20)
-    output_images(imageSet_test, 'test', './image', 20)
+    save_images(imageSet_test, 'test', './image', 20)

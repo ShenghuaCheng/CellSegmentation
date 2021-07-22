@@ -16,7 +16,7 @@ import model.resnet as models
 from train import predict_patch
 
 parser = argparse.ArgumentParser(description='Testing & Heatmap')
-parser.add_argument('-m', '--model', type=str, default='checkpoint_best.pth', help='path to pretrained model')
+parser.add_argument('-m', '--model', type=str, default='checkpoint_10epochs.pth', help='path to pretrained model')
 parser.add_argument('-b', '--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 parser.add_argument('-k', '--topk', default=10, type=int,
@@ -24,7 +24,7 @@ parser.add_argument('-k', '--topk', default=10, type=int,
 parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
 parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
-parser.add_argument('-o', '--output', type=str, default='.', help='path of output details .csv file')
+parser.add_argument('-o', '--output', type=str, default='./output', help='path of output details .csv file')
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -33,14 +33,18 @@ if torch.cuda.is_available():
 else:
     torch.manual_seed(1)
 
-print('Init Model ...')
+print("Testing settings: ")
+print("Model: {} | Patches batch size: {} | Top-k: {}".format(args.model, args.batch_size, args.topk))
 model = models.MILresnet18(pretrained=True)
 model.fc_patch = nn.Linear(model.fc_patch.in_features, 2)
 model.load_state_dict(torch.load(args.model)['state_dict'])
 
-# normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-# trans = transforms.Compose([transforms.ToTensor(), normalize])
-trans = transforms.ToTensor()
+normalize = transforms.Normalize(
+    mean=[0.485, 0.456, 0.406],
+    std=[0.229, 0.224, 0.225]
+)
+trans = transforms.Compose([transforms.ToTensor(), normalize])
+# trans = transforms.ToTensor()
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 os.environ['CUDA_VISIBLE_DEVICES'] = args.device
@@ -155,13 +159,10 @@ def heatmap(testset, patches, probs, topk, output_path):
 if __name__ == "__main__":
     from dataset.datasets import LystoTestset
 
-    print("Testing settings: ")
-    print("Model: {} | Patches batch size: {} | Top-k: {}"
-          .format(args.model, args.batch_size, args.topk))
 
     print('Loading Dataset ...')
     imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans,
                                  interval=args.interval, size=args.patch_size, num_of_imgs=20)
 
     test(imageSet_test, batch_size=args.batch_size, workers=args.workers, model=model, topk=args.topk,
-         output_path='./output/7_7_10e_patchonly')
+         output_path=args.output)

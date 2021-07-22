@@ -2,9 +2,12 @@ import h5py
 import random
 import numpy as np
 import matplotlib.pyplot as plt
-
+from itertools import cycle
+from PIL import Image
+import torch
 from torch.utils.data import Dataset, DataLoader
-
+import torchvision.transforms as transforms
+import torchvision.utils as utils
 
 class LystoDataset(Dataset):
 
@@ -12,7 +15,7 @@ class LystoDataset(Dataset):
                  transform=None,
                  train=True,
                  kfold=10,
-                 interval=10,
+                 interval=20,
                  size=32,
                  num_of_imgs=0):
         """
@@ -20,7 +23,7 @@ class LystoDataset(Dataset):
         :param transform:   数据预处理方式
         :param train:       训练集 / 验证集，默认为训练集
         :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
-        :param interval:    在切片上选取 patch 的间隔，默认值为 10px
+        :param interval:    在切片上选取 patch 的间隔，默认值为 20px
         :param size:        一个 patch 的边长，默认值为 32px
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
@@ -35,11 +38,12 @@ class LystoDataset(Dataset):
 
         self.train = train
         self.kfold = kfold
+        self.visualize = False
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
         self.patchIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
-        self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
+        self.patches_grid = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.size = size
 
@@ -58,7 +62,7 @@ class LystoDataset(Dataset):
             self.images.append(img)
             self.labels.append(label)
             p = get_patches(img, self.interval, self.size)
-            self.patches.extend(p) # 获取 32 * 32 的实例
+            self.patches_grid.extend(p) # 获取 32 * 32 的实例
             self.patchIDX.extend([patchIDX] * len(p))
 
         assert len(self.labels) == len(self.images)
@@ -69,13 +73,16 @@ class LystoDataset(Dataset):
     def setmode(self, mode):
         self.mode = mode
 
-    def make_train_data(self, idxs, shuffle=True):
+    def visualize_bboxes(self):
+        self.visualize = True
+
+    def make_train_data(self, idxs):
         # 用于 mode 2，制作训练用数据集
         # 当 patch 对应的切片的 label 为 n 时标签为 1 ，否则为 0
-        self.train_data = [(self.patchIDX[i], self.patches[i],
+        self.train_data = [(self.patchIDX[i], self.patches_grid[i],
                            0 if self.labels[self.patchIDX[i]] == 0 else 1) for i in idxs]
-        if shuffle:
-            self.train_data = random.sample(self.train_data, len(self.train_data))
+        # if shuffle:
+        #     self.train_data = random.sample(self.train_data, len(self.train_data))
 
         pos = 0
         for _, _, label in self.train_data:
@@ -90,7 +97,7 @@ class LystoDataset(Dataset):
 
         # top-k 选取模式 (patch mode)
         if self.mode == 1:
-            (x, y) = self.patches[idx]
+            (x, y) = self.patches_grid[idx]
             patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
             if self.transform:
                 patch = self.transform(patch)
@@ -98,38 +105,83 @@ class LystoDataset(Dataset):
             label = self.labels[self.patchIDX[idx]]
             return patch, label
 
-        # patch training mode
+        # alternative training mode
         elif self.mode == 2:
+            # Get slides
+            slide = self.images[idx]
+            label_cls = 0 if self.labels[idx] == 0 else 1
+            label_reg = self.labels[idx]
+
+            if self.visualize:
+                plt.imshow(slide)
+
+            # Get patches
+            patches = []
+            patch_grids = []
+            patch_labels = []
+            for patchIDX, (x, y), label in self.train_data:
+                if patchIDX == idx:
+                    patch = self.images[patchIDX][x:x + self.size - 1, y:y + self.size - 1]
+                    patches.append(patch)
+                    patch_grids.append((x, x + self.size - 1, y, y + self.size - 1))
+                    patch_labels.append(label)
+
+                    if self.visualize:
+                        plt.gca().add_patch(
+                            plt.Rectangle((x, y), x + self.size - 1, y + self.size - 1,
+                                          fill=False, edgecolor='red' if label == 0 else 'deepskyblue', linewidth=1)
+                        )
+
+            # patch visualize testing
+            if self.visualize:
+                plt.savefig('test/img{}.png'.format(idx))
+                print("Image is saved.")
+
+            #     slide_tensor = torch.from_numpy(slide.transpose((2, 0, 1))).contiguous()
+            #     utils.draw_bounding_boxes(slide_tensor, torch.tensor(patch_grids),
+            #                               labels=['neg' if lbl == 0 else 'pos' for lbl in patch_labels],
+            #                               colors=list(cycle('red')))
+            #     utils.save_image(slide, "test/img{}.png".format(idx))
+            #     print("Image is saved.")
+
+            if self.transform:
+                patches = [self.transform(patch) for patch in patches]
+                slide = self.transform(slide)
+
+            return (slide.unsqueeze(0), torch.stack(patches, dim=0)), \
+                   (label_cls, label_reg, [], torch.tensor(patch_labels))
+
+        # patch-only training mode
+        elif self.mode == 3:
             patchIDX, (x, y), label = self.train_data[idx]
             patch = self.images[patchIDX][x:x + self.size - 1, y:y + self.size - 1]
-            # visualize test
-            if idx < 50:
-                from PIL import Image
-                Image.fromarray(patch).save('test/label{}/img{}_patch{}.png'.format(label, patchIDX, idx))
             if self.transform:
                 patch = self.transform(patch)
             return patch, label
 
-        # slide training mode
-        elif self.mode == 3:
+        # slide-only training & validating mode
+        elif self.mode == 4:
             slide = self.images[idx]
             label_cls = 0 if self.labels[idx] == 0 else 1
-            label_num = self.labels[idx]
+            label_reg = self.labels[idx]
 
             if self.transform:
                 slide = self.transform(slide)
-            return slide, label_cls, label_num
+            return slide, label_cls, label_reg, []
 
         else:
             raise Exception("Something wrong in setmode.")
 
 
     def __len__(self):
+
         if self.mode == 1:
             return len(self.patchIDX)
         elif self.mode == 2:
-            return len(self.train_data)
+            return len(self.images)
         elif self.mode == 3:
+            return len(self.train_data)
+        elif self.mode == 4:
             return len(self.labels)
         else:
             raise Exception("Something wrong in setmode.")
@@ -158,7 +210,7 @@ class LystoTestset(Dataset):
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.patchIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
-        self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
+        self.patches_grid = []      # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.size = size
 
@@ -173,7 +225,7 @@ class LystoTestset(Dataset):
             self.organs.append(organ)
             self.images.append(img)
             p = get_patches(img, self.interval, self.size)
-            self.patches.extend(p) # 获取 32 * 32 的实例
+            self.patches_grid.extend(p) # 获取 32 * 32 的实例
             self.patchIDX.extend([patchIDX] * len(p))
 
         self.transform = transform
@@ -182,7 +234,7 @@ class LystoTestset(Dataset):
 
         # organ = self.organs[idx]
 
-        (x, y) = self.patches[idx]
+        (x, y) = self.patches_grid[idx]
         patch = self.images[self.patchIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
         if self.transform is not None:
             patch = self.transform(patch)
@@ -231,10 +283,10 @@ if __name__ == '__main__':
     plt.imshow(imageSet.images[0])
     plt.show()
     print("Slide: {0}\nLabel: {1}".format(imageSet.organs[0], imageSet.labels[0]))
-    print("Grids of patches: {}".format(imageSet.patches[0]))
+    print("Grids of patches: {}".format(imageSet.patches_grid[0]))
 
     print("The first validation image: ")
     plt.imshow(imageSet_val.images[0])
     plt.show()
     print("Slide: {0}\nLabel: {1}".format(imageSet_val.organs[0], imageSet_val.labels[0]))
-    print("Grids of patches: {}".format(imageSet_val.patches[0]))
+    print("Grids of patches: {}".format(imageSet_val.patches_grid[0]))
